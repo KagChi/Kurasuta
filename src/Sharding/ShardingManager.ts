@@ -24,6 +24,7 @@ export interface SharderOptions {
 	retry?: boolean;
 	nodeArgs?: Array<string>;
 	reSharding?: boolean;
+	reShardingTimeout?: number;
 }
 
 export interface SessionObject {
@@ -58,6 +59,7 @@ export class ShardingManager extends EventEmitter {
 	public nodeArgs?: Array<string>;
 	public ipc: MasterIPC;
 	public reSharding: boolean;
+	public reShardingTimeout: number;
 
 	private readonly development: boolean;
 	private readonly token?: string;
@@ -78,6 +80,7 @@ export class ShardingManager extends EventEmitter {
 		this.nodeArgs = options.nodeArgs;
 		this.ipc = new MasterIPC(this);
 		this.reSharding = options.reSharding ?? false;
+		this.reShardingTimeout = Number(options.reShardingTimeout ?? 60000);
 
 		this.ipc.on('debug', msg => this._debug(`[IPC] ${msg}`));
 		this.ipc.on('error', err => this.emit(SharderEvents.ERROR, err));
@@ -93,6 +96,9 @@ export class ShardingManager extends EventEmitter {
 
 				this.shardCount = Util.calcShards(recommendShards, this.guildsPerShard);
 				this._debug(`Using recommend shard count of ${this.shardCount} shards with ${this.guildsPerShard} guilds per shard`);
+				if (this.reSharding) {
+					setTimeout(() => this.reShardingClient(), this.reShardingTimeout)
+				}
 			}
 
 			this._debug(`Starting ${this.shardCount} Shards in ${this.clusterCount} Clusters!`);
@@ -147,6 +153,35 @@ export class ShardingManager extends EventEmitter {
 		this._debug(`Restarting Cluster ${clusterID}`);
 
 		await cluster.respawn();
+	}
+
+	private async reShardingClient() {
+		if (cluster.isPrimary) {
+			this._debug('Re-fetching Session Endpoint');
+			const { shards: recommendShards } = await this._fetchSessionEndpoint();
+
+			this.shardCount = Util.calcShards(recommendShards, this.guildsPerShard);
+			this._debug(`Using recommend shard count of ${this.shardCount} shards with ${this.guildsPerShard} guilds per shard`);
+			if (this.reSharding) {
+				setTimeout(() => this.reShardingClient(), this.reShardingTimeout)
+			}
+
+			this._debug('Re-calculating Clusters Shards');
+			const shardArray = [...Array(this.shardCount).keys()];
+			const shardTuple = Util.chunk(shardArray, this.clusterCount);
+			for (let index = 0; index < this.clusterCount; index++) {
+				const shards = shardTuple.shift()!;
+				const cluster = this.clusters.get(index);
+				if (!cluster) throw new Error('No Cluster with that ID found, are you nesting clusters?');
+				cluster.shards = shards;
+				// TODO: Re-shard all clusters
+			}
+			if (this.reSharding) {
+				setTimeout(() => this.reShardingClient(), this.reShardingTimeout)
+			}
+		}
+		
+		throw new Error("This only can be called by the primary cluster.");
 	}
 
 	public fetchClientValues(prop: string) {
