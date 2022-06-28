@@ -176,9 +176,6 @@ export class ShardingManager extends EventEmitter {
 				cluster.shards = shards;
 				// TODO: Re-shard all clusters
 			}
-			if (this.reSharding) {
-				setTimeout(() => this.reShardingClient(), this.reShardingTimeout)
-			}
 		}
 		
 		throw new Error("This only can be called by the primary cluster.");
