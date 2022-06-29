@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events';
 import { cpus } from 'node:os';
 import cluster from 'node:cluster';
 import * as Util from '../Util/Util';
-import fetch from 'node-fetch';
+import { fetch } from 'undici';
 import { NodeMessage } from 'veza';
 
 export interface SharderOptions {
@@ -23,6 +23,8 @@ export interface SharderOptions {
 	timeout?: number;
 	retry?: boolean;
 	nodeArgs?: Array<string>;
+	reSharding?: boolean;
+	reShardingTimeout?: number;
 }
 
 export interface SessionObject {
@@ -45,6 +47,8 @@ export interface CloseEvent {
 
 export class ShardingManager extends EventEmitter {
 	public clusters = new Map<number, Cluster>();
+	public clustersClient = new Map<number, Client>();
+	public clustersClientSessionId = new Map<number, Map<number, string>>();
 	public clientOptions: ClientOptions;
 	public shardCount: number | 'auto';
 	public guildsPerShard: number;
@@ -56,6 +60,8 @@ export class ShardingManager extends EventEmitter {
 	public retry: boolean;
 	public nodeArgs?: Array<string>;
 	public ipc: MasterIPC;
+	public reSharding: boolean;
+	public reShardingTimeout: number;
 
 	private readonly development: boolean;
 	private readonly token?: string;
@@ -75,6 +81,8 @@ export class ShardingManager extends EventEmitter {
 		this.token = options.token;
 		this.nodeArgs = options.nodeArgs;
 		this.ipc = new MasterIPC(this);
+		this.reSharding = options.reSharding ?? false;
+		this.reShardingTimeout = Number(options.reShardingTimeout ?? 60000);
 
 		this.ipc.on('debug', msg => this._debug(`[IPC] ${msg}`));
 		this.ipc.on('error', err => this.emit(SharderEvents.ERROR, err));
@@ -90,6 +98,9 @@ export class ShardingManager extends EventEmitter {
 
 				this.shardCount = Util.calcShards(recommendShards, this.guildsPerShard);
 				this._debug(`Using recommend shard count of ${this.shardCount} shards with ${this.guildsPerShard} guilds per shard`);
+				if (this.reSharding) {
+					setTimeout(() => this.reShardingClient(), this.reShardingTimeout)
+				}
 			}
 
 			this._debug(`Starting ${this.shardCount} Shards in ${this.clusterCount} Clusters!`);
@@ -144,6 +155,32 @@ export class ShardingManager extends EventEmitter {
 		this._debug(`Restarting Cluster ${clusterID}`);
 
 		await cluster.respawn();
+	}
+
+	private async reShardingClient() {
+		if (cluster.isPrimary) {
+			this._debug('Re-fetching Session Endpoint');
+			const { shards: recommendShards } = await this._fetchSessionEndpoint();
+
+			this.shardCount = Util.calcShards(recommendShards, this.guildsPerShard);
+			this._debug(`Using recommend shard count of ${this.shardCount} shards with ${this.guildsPerShard} guilds per shard`);
+			if (this.reSharding) {
+				setTimeout(() => this.reShardingClient(), this.reShardingTimeout)
+			}
+
+			this._debug('Re-calculating Clusters Shards');
+			const shardArray = [...Array(this.shardCount).keys()];
+			const shardTuple = Util.chunk(shardArray, this.clusterCount);
+			for (let index = 0; index < this.clusterCount; index++) {
+				const shards = shardTuple.shift()!;
+				const cluster = this.clusters.get(index);
+				if (!cluster) throw new Error('No Cluster with that ID found, are you nesting clusters?');
+				cluster.shards = shards;
+				// TODO: Re-shard all clusters
+			}
+		}
+		
+		throw new Error("This only can be called by the primary cluster.");
 	}
 
 	public fetchClientValues(prop: string) {

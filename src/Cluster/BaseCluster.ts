@@ -20,15 +20,31 @@ export abstract class BaseCluster {
 		const client = this.client as any;
 		client.shard = new ShardClientUtil(client, manager.ipcSocket);
 		this.id = Number(env.CLUSTER_ID);
+		if (manager.reSharding) {
+			manager.clustersClient.set(this.id, this.client);
+			manager.clustersClientSessionId.set(this.id, new Map());
+		}
 	}
 
 	public async init() {
 		const shardUtil = this.client.shard! as ShardClientUtil;
 		await shardUtil.init();
 		this.client.once('ready', () => { void shardUtil.send({ op: IPCEvents.READY, d: this.id }, { receptive: false }); });
-		this.client.on('shardReady', id => { void shardUtil.send({ op: IPCEvents.SHARDREADY, d: { id: this.id, shardID: id } }, { receptive: false }); });
+		this.client.on('shardReady', id => { 
+			 shardUtil.send({ op: IPCEvents.SHARDREADY, d: { id: this.id, shardID: id } }, { receptive: false });
+			 if (this.manager.reSharding) {
+				/* @ts-expect-error sessionId is private */
+				this.manager.clustersClientSessionId.get(this.id)!.set(id, this.client.ws.shards.get(id)!.sessionId);
+			 }
+		});
 		this.client.on('shardReconnecting', id => { void shardUtil.send({ op: IPCEvents.SHARDRECONNECT, d: { id: this.id, shardID: id } }, { receptive: false }); });
-		this.client.on('shardResume', (id, replayed) => { void shardUtil.send({ op: IPCEvents.SHARDRESUME, d: { id: this.id, shardID: id, replayed } }, { receptive: false }); });
+		this.client.on('shardResume', (id, replayed) => { 
+			void shardUtil.send({ op: IPCEvents.SHARDRESUME, d: { id: this.id, shardID: id, replayed } }, { receptive: false }); 
+			if (this.manager.reSharding) {
+				/* @ts-expect-error sessionId is private */
+				this.manager.clustersClientSessionId.get(this.id)!.set(id, this.client.ws.shards.get(id)!.sessionId);
+			 }
+		});
 		this.client.on('shardDisconnect', ({ code, reason, wasClean }, id) => { void shardUtil.send({ op: IPCEvents.SHARDDISCONNECT, d: { id: this.id, shardID: id, closeEvent: { code, reason, wasClean } } }, { receptive: false }); });
 		await this.launch();
 	}
