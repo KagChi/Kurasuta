@@ -47,6 +47,8 @@ export interface CloseEvent {
 
 export class ShardingManager extends EventEmitter {
 	public clusters = new Map<number, Cluster>();
+	public clustersClient = new Map<number, Client>();
+	public clustersClientSessionId = new Map<number, Map<number, string>>();
 	public clientOptions: ClientOptions;
 	public shardCount: number | 'auto';
 	public guildsPerShard: number;
